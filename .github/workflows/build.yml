@@ -72,7 +72,7 @@ jobs:
             echo "- digest: \`$digest\`"
             echo "- build: ${BUILD_S} s, push: $(( $(date +%s) - start )) s"
             echo "- unpacked size: $(( size / 1000000 )) MB"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
   rebuild:
     needs: build
     runs-on: ubuntu-24.04
@@ -123,5 +123,5 @@ jobs:
             echo "- cold pull of the /opt/target image: ${PULL_S} s"
             echo "- /opt/ort-build: ${before} MB before, ${after} MB after; container writable layer: $layer"
             echo "- peak container memory: ${peak} MiB (sampled every 15 s)"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
           test "$code" = 0

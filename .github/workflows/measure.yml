@@ -65,5 +65,5 @@ jobs:
             echo "- cold pull of the /opt/target image: ${PULL_S} s"
             echo "- /opt/ort-build: ${before} MB before, ${after} MB after; container writable layer: $layer"
             echo "- peak container memory: ${peak} MiB (sampled every 15 s)"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
           test "$code" = 0
