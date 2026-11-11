@@ -94,7 +94,7 @@ jobs:
       - name: Rebuild after a comment change in op_kernel.h
         run: |
           start=$(date +%s)
-          docker run -d --name m --user runner "$TAG" bash -c '
+          docker run -d --name rebuild-measure --user runner "$TAG" bash -c '
             set -e
             cd /opt/target
             printf "\n// measurement only: a comment that changes nothing\n" >> include/onnxruntime/core/framework/op_kernel.h
@@ -103,20 +103,20 @@ jobs:
             grep -c "^\[" /tmp/rebuild.log > /tmp/steps || true
             du -sm /opt/ort-build | cut -f1 > /tmp/build_mb_after'
           peak=0
-          while [ "$(docker inspect -f '{{.State.Running}}' m)" = true ]; do
-            mem=$(docker stats --no-stream --format '{{.MemUsage}}' m | awk '{print $1}')
+          while [ "$(docker inspect -f '{{.State.Running}}' rebuild-measure)" = true ]; do
+            mem=$(docker stats --no-stream --format '{{.MemUsage}}' rebuild-measure | awk '{print $1}')
             mib=$(python3 -c "import sys,re; v=sys.argv[1]; n=float(re.sub(r'[^0-9.]','',v)); u=re.sub(r'[0-9.]','',v); print(int(n*{'B':2**-20,'KiB':2**-10,'MiB':1,'GiB':1024}.get(u,1)))" "$mem")
             [ "$mib" -gt "$peak" ] && peak=$mib
             sleep 15
           done
-          code=$(docker inspect -f '{{.State.ExitCode}}' m)
+          code=$(docker inspect -f '{{.State.ExitCode}}' rebuild-measure)
           secs=$(( $(date +%s) - start ))
-          docker cp m:/tmp/rebuild.log rebuild.log || true
+          docker cp rebuild-measure:/tmp/rebuild.log rebuild.log || true
           tail -n 5 rebuild.log || true
-          before=$(docker cp m:/tmp/build_mb_before - 2>/dev/null | tar -xO || echo "?")
-          after=$(docker cp m:/tmp/build_mb_after - 2>/dev/null | tar -xO || echo "?")
-          steps=$(docker cp m:/tmp/steps - 2>/dev/null | tar -xO || echo "?")
-          layer=$(docker ps -as --filter name=m --format '{{.Size}}')
+          before=$(docker cp rebuild-measure:/tmp/build_mb_before - 2>/dev/null | tar -xO || echo "?")
+          after=$(docker cp rebuild-measure:/tmp/build_mb_after - 2>/dev/null | tar -xO || echo "?")
+          steps=$(docker cp rebuild-measure:/tmp/steps - 2>/dev/null | tar -xO || echo "?")
+          layer=$(docker ps -as --filter name=rebuild-measure --format '{{.Size}}')
           {
             echo "### rebuild after the op_kernel.h comment, 4 jobs on this runner's $(nproc --all) CPUs"
             echo "- exit code: $code, steps: $steps, wall time: $secs s"
