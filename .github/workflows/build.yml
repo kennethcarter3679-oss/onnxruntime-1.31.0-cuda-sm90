@@ -37,7 +37,10 @@ jobs:
         run: |
           tag="$IMAGE:${{ matrix.source }}-${GITHUB_SHA::7}"
           start=$(date +%s)
-          docker build --progress=plain \
+          # The host's network and resolver: Docker's own DNS failed to resolve archive.ubuntu.com
+          # on these runners while it resolved NVIDIA's repository.
+          getent hosts archive.ubuntu.com security.ubuntu.com || true
+          docker build --progress=plain --network host \
             --label org.opencontainers.image.source="https://github.com/${{ github.repository }}" \
             -t "$tag" ${{ matrix.source }}
           echo "BUILD_S=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
