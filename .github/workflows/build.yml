@@ -1,0 +1,109 @@
+name: build
+# Builds both images, pushes them to GHCR and writes their digests to the run summary. Then it
+# pulls the /opt/target image cold, changes one comment in op_kernel.h, which more than 500 objects
+# depend on, and times the rebuild, with the disk and memory it used.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  packages: write
+defaults:
+  run:
+    shell: bash
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/onnxruntime-1.31.0-cuda-sm90
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [app, opt-target]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Free disk
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost \
+            /usr/share/swift /usr/local/.ghcup /usr/local/share/powershell /usr/local/lib/node_modules
+          docker system prune -af > /dev/null
+          df -h /
+      - uses: actions/checkout@v4
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build
+        run: |
+          tag="$IMAGE:${{ matrix.source }}-${GITHUB_SHA::7}"
+          start=$(date +%s)
+          docker build --progress=plain \
+            --label org.opencontainers.image.source="https://github.com/${{ github.repository }}" \
+            -t "$tag" ${{ matrix.source }}
+          echo "BUILD_S=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          df -h /
+      - name: Push
+        run: |
+          start=$(date +%s)
+          docker push "$TAG"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$TAG")
+          size=$(docker image inspect --format '{{.Size}}' "$TAG")
+          {
+            echo "### ${{ matrix.source }}"
+            echo "- digest: \`$digest\`"
+            echo "- build: ${BUILD_S} s, push: $(( $(date +%s) - start )) s"
+            echo "- unpacked size: $(( size / 1000000 )) MB"
+          } >> "$GITHUB_STEP_SUMMARY"
+  rebuild:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost \
+            /usr/share/swift /usr/local/.ghcup /usr/local/share/powershell /usr/local/lib/node_modules
+          docker system prune -af > /dev/null
+          df -h /
+      - name: Pull cold
+        run: |
+          tag="$IMAGE:opt-target-${GITHUB_SHA::7}"
+          start=$(date +%s)
+          docker pull -q "$tag"
+          echo "PULL_S=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+      - name: Rebuild after a comment change in op_kernel.h
+        run: |
+          start=$(date +%s)
+          docker run -d --name m --user runner "$TAG" bash -c '
+            set -e
+            cd /opt/target
+            printf "\n// measurement only: a comment that changes nothing\n" >> include/onnxruntime/core/framework/op_kernel.h
+            du -sm /opt/ort-build | cut -f1 > /tmp/build_mb_before
+            cmake --build /opt/ort-build/Release --config Release --parallel 4 > /tmp/rebuild.log 2>&1
+            grep -c "^\[" /tmp/rebuild.log > /tmp/steps || true
+            du -sm /opt/ort-build | cut -f1 > /tmp/build_mb_after'
+          peak=0
+          while [ "$(docker inspect -f '{{.State.Running}}' m)" = true ]; do
+            mem=$(docker stats --no-stream --format '{{.MemUsage}}' m | awk '{print $1}')
+            mib=$(python3 -c "import sys,re; v=sys.argv[1]; n=float(re.sub(r'[^0-9.]','',v)); u=re.sub(r'[0-9.]','',v); print(int(n*{'B':2**-20,'KiB':2**-10,'MiB':1,'GiB':1024}.get(u,1)))" "$mem")
+            [ "$mib" -gt "$peak" ] && peak=$mib
+            sleep 15
+          done
+          code=$(docker inspect -f '{{.State.ExitCode}}' m)
+          secs=$(( $(date +%s) - start ))
+          docker cp m:/tmp/rebuild.log rebuild.log || true
+          tail -n 5 rebuild.log || true
+          before=$(docker cp m:/tmp/build_mb_before - 2>/dev/null | tar -xO || echo "?")
+          after=$(docker cp m:/tmp/build_mb_after - 2>/dev/null | tar -xO || echo "?")
+          steps=$(docker cp m:/tmp/steps - 2>/dev/null | tar -xO || echo "?")
+          layer=$(docker ps -as --filter name=m --format '{{.Size}}')
+          {
+            echo "### rebuild after the op_kernel.h comment, 4 jobs on this runner's $(nproc --all) CPUs"
+            echo "- exit code: $code, steps: $steps, wall time: $secs s"
+            echo "- cold pull of the /opt/target image: ${PULL_S} s"
+            echo "- /opt/ort-build: ${before} MB before, ${after} MB after; container writable layer: $layer"
+            echo "- peak container memory: ${peak} MiB (sampled every 15 s)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$code" = 0
