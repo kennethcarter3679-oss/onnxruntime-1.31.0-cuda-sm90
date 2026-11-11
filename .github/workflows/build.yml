@@ -37,10 +37,25 @@ jobs:
         run: |
           tag="$IMAGE:${{ matrix.source }}-${GITHUB_SHA::7}"
           start=$(date +%s)
-          # The host's network and resolver: Docker's own DNS failed to resolve archive.ubuntu.com
-          # on these runners while it resolved NVIDIA's repository.
-          getent hosts archive.ubuntu.com security.ubuntu.com || true
-          docker build --progress=plain --network host \
+          # The runners' resolver has failed for the Ubuntu archive hosts while it still resolved
+          # NVIDIA's repository, so their addresses are looked up here, with public DNS as a fallback,
+          # and handed to the build. apt still talks to the real hosts.
+          resolve() {
+            local ip
+            ip=$(getent ahostsv4 "$1" | awk 'NR==1 {print $1}')
+            [ -n "$ip" ] || ip=$(dig +short +time=5 +tries=2 @1.1.1.1 "$1" A 2>/dev/null | grep -E '^[0-9.]+$' | head -1)
+            [ -n "$ip" ] || ip=$(curl -s --max-time 10 -H 'accept: application/dns-json' \
+              "https://1.1.1.1/dns-query?name=$1&type=A" | python3 -c \
+              'import sys, json; print(next((a["data"] for a in json.load(sys.stdin).get("Answer", []) if a.get("type") == 1), ""))')
+            echo "$ip"
+          }
+          hosts=()
+          for h in archive.ubuntu.com security.ubuntu.com; do
+            ip=$(resolve "$h")
+            echo "$h -> ${ip:-not resolved}"
+            [ -n "$ip" ] && hosts+=(--add-host "$h:$ip")
+          done
+          docker build --progress=plain --network host "${hosts[@]}" \
             --label org.opencontainers.image.source="https://github.com/${{ github.repository }}" \
             -t "$tag" ${{ matrix.source }}
           echo "BUILD_S=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
