@@ -34,7 +34,8 @@ RUN cd /app && ./build.sh --config Release --build_dir /opt/ort-build \
       --parallel 4 --nvcc_threads 1 --allow_running_as_root --cmake_generator Ninja \
       --cmake_extra_defines CMAKE_CUDA_ARCHITECTURES=90 onnxruntime_BUILD_UNIT_TESTS=OFF \
         onnxruntime_USE_FLASH_ATTENTION=OFF onnxruntime_USE_MEMORY_EFFICIENT_ATTENTION=OFF onnxruntime_USE_TRT_FUSED_ATTENTION=OFF \
- && echo /opt/ort-build/Release > "$(python3 -c 'import site; print(site.getsitepackages()[0])')/ort-build.pth" \
- && python3 -c "import onnxruntime; assert onnxruntime.__file__.startswith('/opt/ort-build/')"
+ && echo /opt/ort-build/Release > "$(python3 -c 'import site; print(site.getsitepackages()[0])')/ort-build.pth"
+# From /, since Python run in /app finds the source tree's onnxruntime/ package first.
+RUN cd / && python3 -c "import onnxruntime; assert onnxruntime.__file__.startswith('/opt/ort-build/')"
 
 WORKDIR /app
